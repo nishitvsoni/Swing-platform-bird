@@ -1,36 +1,42 @@
-# NSE/BSE Swing Trade Screener
+# NSE Swing Trade Screener
 
-A Streamlit screener for NSE-listed stocks that combines **technical** and
-**fundamental** checks into a single weighted score.
+A Streamlit screener for NSE-listed stocks, scored on technical criteria
+pulled from NSE's own official daily **Bhavcopy** files.
+
+## Why Bhavcopy instead of yfinance
+
+The original version used `yfinance` (Yahoo Finance). Yahoo began
+returning `YFRateLimitError: Too Many Requests` for every single request,
+including single-stock tests run outside this app entirely - confirming a
+hard block, not something request-throttling could fix. This version pulls
+directly from NSE instead: one small official CSV per trading day, covering
+every listed equity's OHLC + volume, downloaded once and cached.
+
+**Trade-off:** NSE's Bhavcopy has no fundamental data (P/B, debt/equity,
+revenue growth). Instead, the app lets you **upload your own fundamentals**
+(CSV/Excel) via the sidebar - see `WHERE_TO_GET_EARNINGS_DATA.md` for where
+to source that data and `fundamentals_template.csv` for the expected format.
 
 ## Features
 
-**Technical checks**
 - Price > 20 EMA > 50 EMA (trend)
 - 20-day Rate of Change > 0% (momentum)
-- Stock RSI > sector RSI (relative strength vs its sector index)
+- Stock RSI > market median RSI (relative strength vs the scanned universe)
 - Volume ≥ 1.1x 20-day average volume (volume surge)
 
-**Fundamental checks**
-- Average Daily Traded Turnover (₹ Cr) above a minimum liquidity bar
-- Price-to-Book ratio below a maximum
-- Debt-to-Equity ratio below a maximum
-- YoY revenue growth above a minimum
-
-Each side produces a 0–100% match score; the sidebar lets you set the
-technical/fundamental weighting (default 60/40) and a minimum final-score
-cutoff for the results table.
+Each stock gets a 0–100% technical match score; the sidebar sets which
+checks are active and the minimum score to show in results.
 
 ## Project structure
 
 ```
 stock-screener/
-├── app.py                  # Streamlit UI - sidebar controls, run button, results table
+├── app.py                          # Streamlit UI
 ├── screener/
-│   ├── data.py             # NSE symbol universe + sector RSI fetching (cached)
-│   ├── technical.py        # technical indicator calculation + scoring
-│   ├── fundamental.py      # fundamental ratio scoring
-│   └── scan.py             # per-stock analysis worker + parallel scan runner
+│   ├── data.py                     # NSE Bhavcopy download + caching
+│   ├── technical.py                # indicator calculation + scoring
+│   ├── fundamental.py              # scores against your uploaded fundamentals file
+│   └── scan.py                     # scores the full universe from bulk history
 ├── requirements.txt
 └── .gitignore
 ```
@@ -44,30 +50,27 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app opens at `http://localhost:8501`.
-
 ## Deploying for free (Streamlit Community Cloud)
 
 1. Push this repo to GitHub.
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
-3. Click **New app**, pick this repo/branch, set the main file to `app.py`.
-4. Deploy. Every push to the branch auto-redeploys.
-
-No secrets/API keys are required for the current technical + fundamental
-version — data comes from Yahoo Finance (`yfinance`) and the NSE symbol list.
+2. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub.
+3. **New app** → pick this repo/branch, main file `app.py` → **Deploy**.
 
 ## Notes / known limitations
 
-- `yfinance` and the NSE symbol CSV are free but unofficial sources; NSE
-  occasionally rate-limits or changes its CSV endpoint, in which case the
-  screener falls back to a Nifty 500 mirror list, then a small hardcoded list.
-- Scanning "All NSE Listed Equities" (~2000+ stocks) is slow on Streamlit
-  Community Cloud's shared CPU — Nifty 500 is the practical default.
-- Sector RSI values are cached for 1 hour, symbol lists for 24 hours, to
-  keep repeated scans fast.
+- First scan of a given day downloads N days of Bhavcopy files
+  sequentially (a progress bar shows this) - each day is then cached for
+  30 days, so later scans in the same session are fast.
+- NSE occasionally changes its Bhavcopy URL format (it last changed in
+  2024 to the current "UDiFF" format) - if downloads start failing, that's
+  the first thing to check.
+- Data is end-of-day only - no live intraday prices.
+- Fundamentals are optional and user-supplied - upload a CSV/Excel via the
+  sidebar (see `WHERE_TO_GET_EARNINGS_DATA.md`), or leave it out for a
+  100% technical score.
 
 ## Possible next steps
 
-- Add unit tests for `screener/technical.py` and `screener/fundamental.py`
+- Add a real fundamentals source (see `DATA_SOURCE_ALTERNATIVES.md`)
 - Add CSV export of scan results
-- Re-introduce AI-generated commentary/scoring as an optional module later
+- Persist downloaded Bhavcopy data to disk so it survives redeploys
