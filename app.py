@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 
 from screener.data import fetch_all_nse_symbols, fetch_sector_rsis
@@ -42,12 +43,26 @@ tech_checks = {
 }
 
 st.sidebar.subheader("📊 Fundamental Parameters")
-fund_thresholds = {
-    "min_adtv": st.sidebar.number_input("Min Average Daily Turnover (₹ Crores)", value=1.0, step=0.5),
-    "max_pb": st.sidebar.number_input("Max Price-to-Book (P/B) Ratio", value=6.0, step=0.5),
-    "max_de": st.sidebar.number_input("Max Debt-to-Equity Ratio", value=1.2, step=0.1),
-    "min_rev_growth": st.sidebar.number_input("Min YoY Revenue Growth (%)", value=0.0, step=1.0),
-}
+use_fundamentals = st.sidebar.checkbox(
+    "Apply fundamental filters", value=True,
+    help="Turn off to test technical checks in isolation - fundamentals "
+         "still get computed and shown, but won't drag the final score down.",
+)
+if use_fundamentals:
+    fund_thresholds = {
+        "min_adtv": st.sidebar.number_input("Min Average Daily Turnover (₹ Crores)", value=1.0, step=0.5),
+        "max_pb": st.sidebar.number_input("Max Price-to-Book (P/B) Ratio", value=6.0, step=0.5),
+        "max_de": st.sidebar.number_input("Max Debt-to-Equity Ratio", value=1.2, step=0.1),
+        "min_rev_growth": st.sidebar.number_input("Min YoY Revenue Growth (%)", value=0.0, step=1.0),
+    }
+else:
+    # Effectively unfiltered - every fundamental check passes automatically
+    fund_thresholds = {
+        "min_adtv": 0.0, "max_pb": float("inf"),
+        "max_de": float("inf"), "min_rev_growth": float("-inf"),
+    }
+    tech_weight = 100
+    st.sidebar.caption("Fundamentals disabled - score is 100% technical.")
 
 # Cached sector RSIs (refreshed hourly)
 sector_rsi_dict = fetch_sector_rsis()
@@ -70,7 +85,7 @@ if st.button("🚀 Run Swing Screener"):
         p_bar.progress(completed / total)
         status_txt.text(f"Processed {completed}/{total} stocks...")
 
-    res_df = run_scan(
+    res_df, failure_reasons = run_scan(
         scan_universe, sector_rsi_dict, tech_checks, fund_thresholds, tech_weight,
         progress_callback=on_progress,
     )
@@ -78,14 +93,42 @@ if st.button("🚀 Run Swing Screener"):
     p_bar.empty()
     status_txt.empty()
 
+    n_fetched = len(res_df)
+    n_failed = sum(failure_reasons.values())
+
     if not res_df.empty:
         filtered_df = res_df[res_df["Final Score (%)"] >= min_final_score].sort_values(
             by="Final Score (%)", ascending=False
         )
         st.success(
-            f"Scan Finished! Found {len(filtered_df)} stocks matching score "
-            f"criteria (≥ {min_final_score}%)."
+            f"Scan Finished! {n_fetched} stocks had usable data. "
+            f"{len(filtered_df)} matched score criteria (≥ {min_final_score}%)."
         )
+        if len(filtered_df) == 0:
+            st.info(
+                "Data came through fine, but none scored high enough. "
+                "Try lowering the minimum score threshold in the sidebar."
+            )
         st.dataframe(filtered_df, use_container_width=True)
     else:
-        st.warning("No stocks passed the required score threshold. Lower the sidebar minimum score slider.")
+        st.error(
+            f"0 out of {len(scan_universe)} stocks returned usable data - "
+            "this is a data-fetch problem, not a filter/threshold problem."
+        )
+
+    if failure_reasons:
+        with st.expander(f"⚠️ Why {n_failed} stocks were skipped (click to view)"):
+            reason_df = pd.DataFrame(
+                sorted(failure_reasons.items(), key=lambda x: -x[1]),
+                columns=["Reason", "Count"],
+            )
+            st.dataframe(reason_df, use_container_width=True)
+            st.markdown(
+                "If most reasons say **'no price history returned'** or "
+                "**'no fundamentals info returned'**, Yahoo Finance is "
+                "rate-limiting or blocking requests from this server "
+                "(common on shared cloud hosting, including Streamlit "
+                "Community Cloud) - this is not caused by your sidebar "
+                "settings. Try again in a few minutes, or run the scan "
+                "with a smaller stock universe."
+            )
